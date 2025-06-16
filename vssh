@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+# vssh - Vault-signed SSH helper for short-lived, secure SSH access
+# Author: Justin Barlow (netlobo)
+# License: MIT
+# https://github.com/lobo235/vssh
+
+# Configurable defaults (can be overridden in ~/.bashrc or environment)
+VSSH_VAULT_ROLE="${VSSH_VAULT_ROLE:-$(whoami)}"
+VSSH_PRIVATE_KEY="${VSSH_PRIVATE_KEY:-$( [ -f "${HOME}/.ssh/id_ed25519" ] && echo "${HOME}/.ssh/id_ed25519" || echo "${HOME}/.ssh/id_rsa" )}"
+VSSH_PUBLIC_KEY="${VSSH_PUBLIC_KEY:-${VSSH_PRIVATE_KEY}.pub}"
+VSSH_CERT_PATH="${VSSH_CERT_PATH:-${VSSH_PRIVATE_KEY}-cert.pub}"
+VSSH_SIGN_PATH="${VSSH_SIGN_PATH:-ssh/sign/${VSSH_VAULT_ROLE}}"
+VSSH_RENEW_BUFFER_SECS=${VSSH_RENEW_BUFFER_SECS:-300}  # 5 minutes
+
+# Logging functions
+log()        { printf "\033[32m📘 [vssh]\033[0m %s\n" "$1" >&2; }
+log_error()  { printf "\033[31m❌ [vssh]\033[0m %s\n" "$1" >&2; }
+
+# Check for required commands
+for cmd in vault ssh-keygen date; do
+  command -v "$cmd" >/dev/null 2>&1 || {
+    log_error "Required command '$cmd' not found in PATH."
+    exit 1
+  }
+done
+
+# Function to parse expiration time
+get_cert_expiry() {
+  ssh-keygen -L -f "$VSSH_CERT_PATH" 2>/dev/null | awk '/Valid:/ { print $NF }'
+}
+
+# Check if cert exists and is still valid
+should_renew_cert() {
+  if [[ ! -f "$VSSH_CERT_PATH" ]]; then
+    log "  No existing cert found. Will sign a new one."
+    return 0
+  fi
+
+  expiry=$(get_cert_expiry)
+  if [[ -z "$expiry" ]]; then
+    log_error "  Could not parse cert expiration. Renewing..."
+    return 0
+  fi
+
+  expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null)
+  now_epoch=$(date +%s)
+  if (( now_epoch + VSSH_RENEW_BUFFER_SECS >= expiry_epoch )); then
+    log "⏳ Cert expiring soon (by $(date -d "@$expiry_epoch")), renewing..."
+    return 0
+  fi
+
+  log "✅ Existing cert is still valid (expires at $expiry)."
+  return 1
+}
+
+# Sign the public key using Vault
+renew_cert() {
+  if ! signed_key=$(vault write -field=signed_key "$VSSH_SIGN_PATH" public_key=@"$VSSH_PUBLIC_KEY" 2>/dev/null); then
+    log_error "Failed to get signed cert from Vault. Aborting."
+    return 1
+  fi
+  echo "$signed_key" > "$VSSH_CERT_PATH"
+  chmod 600 "$VSSH_CERT_PATH"
+  log "✅ New SSH cert written to $VSSH_CERT_PATH"
+}
+
+# Main entry
+if should_renew_cert; then
+  renew_cert || exit 1
+fi
+
+log "🖥️ Starting SSH session..."
+exec ssh -i "$VSSH_PRIVATE_KEY" -o CertificateFile="$VSSH_CERT_PATH" "$@"
