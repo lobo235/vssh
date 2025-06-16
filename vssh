@@ -20,7 +20,7 @@ log_error()  { printf "\033[31m❌ [vssh]\033[0m %s\n" "$1" >&2; }
 # Check for required commands
 for cmd in vault ssh-keygen date; do
   command -v "$cmd" >/dev/null 2>&1 || {
-    log_error "Required command '$cmd' not found in PATH."
+    log_error "🚫 Required command '$cmd' not found in PATH."
     exit 1
   }
 done
@@ -33,20 +33,20 @@ get_cert_expiry() {
 # Check if cert exists and is still valid
 should_renew_cert() {
   if [[ ! -f "$VSSH_CERT_PATH" ]]; then
-    log "  No existing cert found. Will sign a new one."
+    log "🔍 No existing cert found. Will sign a new one."
     return 0
   fi
 
   expiry=$(get_cert_expiry)
   if [[ -z "$expiry" ]]; then
-    log_error "  Could not parse cert expiration. Renewing..."
+    log_error "⏳ Could not parse cert expiration. Renewing..."
     return 0
   fi
 
   expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null)
   now_epoch=$(date +%s)
   if (( now_epoch + VSSH_RENEW_BUFFER_SECS >= expiry_epoch )); then
-    log "⏳ Cert expiring soon (by $(date -d "@$expiry_epoch")), renewing..."
+    log "⏳ Cert is expiring soon (by $(date -d "@$expiry_epoch")), renewing..."
     return 0
   fi
 
@@ -57,12 +57,12 @@ should_renew_cert() {
 # Sign the public key using Vault
 renew_cert() {
   if ! signed_key=$(vault write -field=signed_key "$VSSH_SIGN_PATH" public_key=@"$VSSH_PUBLIC_KEY" 2>/dev/null); then
-    log_error "Failed to get signed cert from Vault. Aborting."
+    log_error "🔐 Failed to get signed cert from Vault. Aborting."
     return 1
   fi
   echo "$signed_key" > "$VSSH_CERT_PATH"
   chmod 600 "$VSSH_CERT_PATH"
-  log "✅ New SSH cert written to $VSSH_CERT_PATH"
+  log "🔐 New SSH cert written to $VSSH_CERT_PATH"
 }
 
 # Main entry
